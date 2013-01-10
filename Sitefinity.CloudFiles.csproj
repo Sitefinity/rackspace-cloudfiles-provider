@@ -71,7 +71,9 @@
     <Compile Include="BlobStorage\CloudFilesExtensions.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
-  <ItemGroup />
+  <ItemGroup>
+    <None Include="README.md" />
+  </ItemGroup>
   <ItemGroup>
     <Content Include="ReferenceAssemblies\OpenStack.Swift.dll" />
     <Content Include="ReferenceAssemblies\Rackspace.Cloudfiles.dll" />
