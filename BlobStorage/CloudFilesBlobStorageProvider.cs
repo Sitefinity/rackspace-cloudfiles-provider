@@ -10,34 +10,48 @@ using System.IO;
 using Rackspace.Cloudfiles;
 
 namespace Sitefinity.CloudFiles.BlobStorage {
-    public class CloudFilesBlobStorageProvider : CloudBlobStorageProvider { 
+    public class CloudFilesBlobStorageProvider : CloudBlobStorageProvider {
+        public const string USERNAME = "username";
+        public const string API_KEY = "apikey";
+        public const string CONTAINER = "container";
+
+        private string _userName = "";
+        private string _apiKey = "";
+        private string _containerName = "";
+
+        private UserCredentials _userCredentials = null;
+        private CF_Client _client = null;
+        private CF_Connection _connection = null;
+        private CF_Account _account = null;
+        private Container _containerBucket = null;
+
+
         /// <summary>
         /// Initializes the storage.
         /// </summary>
         /// <param name="config">The config.</param> 
         protected override void InitializeStorage(NameValueCollection config) {
-            this._userName = config[Username].Trim();
+            this._userName = config[USERNAME].Trim();
             if (String.IsNullOrEmpty(this._userName))
-                throw new ConfigurationException("'{0}' is required.".Arrange(Username));
+                throw new ConfigurationException("'{0}' is required.".Arrange(USERNAME));
 
-            this._apiKey = config[ApiKey].Trim();
+            this._apiKey = config[API_KEY].Trim();
             if (String.IsNullOrEmpty(this._apiKey))
-                throw new ConfigurationException("'{0}' is required.".Arrange(ApiKey));
+                throw new ConfigurationException("'{0}' is required.".Arrange(API_KEY));
 
-            this._containerName = config[Container].Trim();
+            this._containerName = config[CONTAINER].Trim();
             if (String.IsNullOrEmpty(this._containerName))
-                throw new ConfigurationException("'{0}' is required.".Arrange(Container));
+                throw new ConfigurationException("'{0}' is required.".Arrange(CONTAINER));
 
-            Debug.WriteLine("Authenticating...");
+            //Connect to CloudFiles
             this.Connection.Authenticate();
-            Debug.WriteLine("Authenticated");
 
+            //This will all crap out unless this container is enabled
             var container = this.ContainerBucket;
             if (container != null)
             {
-                Debug.WriteLine("Obtained the container");
                 if(!this.ContainerBucket.CdnEnabled){
-                    throw new CDNNotEnabledException(); //Cdn must be enabled to get the file
+                    throw new CDNNotEnabledException("Please log into your cloud account and enable CDN support on this container."); //Cdn must be enabled to get the file
                 }
             }else{
                 throw new ContainerNotFoundException("Unable to find Container: {0}".Arrange(this._containerName)); //Can't find the container
@@ -53,12 +67,10 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <returns>The length of the uploaded stream.</returns>
         public override long Upload(IBlobContent content, Stream source, int bufferSize)
         {
-            var filename = this.GenerateFileName(content);
+            var filename = content.GetFileName();
             var obj = new CF_Object(this.Connection, this.ContainerBucket, this.Client, filename);
             
-            Debug.WriteLine("Saving File {0} to Cloudfiles", filename);
             obj.Write(source);
-            Debug.WriteLine("File {0} saved to Cloudfiles with object name {1}", content.FilePath, filename);
 
             var uploadedObject = this.ContainerBucket.GetObject(filename);
             
@@ -82,7 +94,7 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="content">The content.</param>
         /// <returns></returns>
         public override Stream GetDownloadStream(IBlobContent content) {
-            string filename = this.GenerateFileName(content);
+            string filename = content.GetFileName();
             try
             {
                 var cloudObject = this.ContainerBucket.GetObject(filename);
@@ -103,7 +115,7 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// </summary>
         /// <param name="location">The location.</param>
         public override void Delete(IBlobContentLocation location) {
-            string filename = this.GenerateFileName(location);
+            string filename = location.GetFileName();
             try
             {
                 this.ContainerBucket.DeleteObject(filename);
@@ -120,14 +132,14 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="location">The location.</param>
         /// <returns></returns>
         public override bool BlobExists(IBlobContentLocation location) {
-            string filename = this.GenerateFileName(location);
+            string filename = location.GetFileName();
             try
             {
-                var cloudObject = this.ContainerBucket.GetObject(filename);
-                return true;
+                return (this.ContainerBucket.GetObject(filename) == null) ? false : true; //Not sure why I'm bothering, it'll throw an exception if there's no object
             }
             catch (ObjectNotFoundException oex)
             {
+                Logger.Writer.Write("Object not found: Checking if Blob {0} Exists on the cloudfiles CDN. {1}".Arrange(filename, oex.Message));
                 return false;
             }
         }
@@ -138,19 +150,14 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="content">The content.</param>
         /// <returns></returns>
         public override string GetItemUrl(IBlobContentLocation content) {
-            string filename = this.GenerateFileName(content);
+            string filename = content.GetFileName();
             try{
                 var cloudObject = this.ContainerBucket.GetObject(filename);
 
                 return (cloudObject != null) ? cloudObject.CdnUri.AbsoluteUri : String.Empty;	
             }catch(ObjectNotFoundException oex){
                 Logger.Writer.Write("Object not found: Error obtaining the Url for file {0} on the CDN as {1} CDN. {2}".Arrange(content.FilePath, filename, oex.Message));
-
-                //######################################
-                //TODO: FIX THIS!!!
-                throw new ObjectNotFoundException("Object doesn't exist in cloudfiles for me to get a url...unsure how to handle this as the entire SF library service crashes");
-                return "";
-                //######################################
+                return "http://127.0.0.1/{0}".Arrange(filename); //Cant return nothing, service will die
             }
         }
 
@@ -160,7 +167,7 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="source">The source.</param>
         /// <param name="destination">The destination.</param>
         public override void Copy(IBlobContentLocation source, IBlobContentLocation destination) {
-            //Do nothing
+            //Do nothing?
         }
 
 
@@ -170,7 +177,7 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="location">The location.</param>
         /// <param name="properties">The properties.</param>
         public override void SetProperties(IBlobContentLocation location, IBlobProperties properties) {
-            //No properties to set by default
+            //No properties to set by default 
         }
         
         /// <summary>
@@ -183,22 +190,11 @@ namespace Sitefinity.CloudFiles.BlobStorage {
             return null;
         }
 
-        public string GenerateFileName(IBlobContent content){
-            return String.Format("{0}{1}", content.FileId.ToString().ToLower(), content.Extension.ToLower());
-        }
-
-        public string GenerateFileName(IBlobContentLocation content)
-        {
-            return String.Format("{0}{1}", content.FileId.ToString().ToLower(), content.Extension.ToLower());
-        }
-
         #region Properties
-
-        public const string Username = "username";
-        public const string ApiKey = "apikey";
-        public const string Container = "container";
-
-        public CF_Client Client {
+        /// <summary>
+        /// Instance of the client
+        /// </summary>
+        protected CF_Client Client {
             get { 
                 if (_client == null)
                     _client = new CF_Client();
@@ -207,7 +203,10 @@ namespace Sitefinity.CloudFiles.BlobStorage {
             set { _client = value; }
         }
 
-        public CF_Connection Connection {
+        /// <summary>
+        /// CloudFiles Connection Object
+        /// </summary>
+        protected CF_Connection Connection {
             get {
                 if (_connection == null)
                     _connection = new CF_Connection(this.UserCredentials);
@@ -216,8 +215,10 @@ namespace Sitefinity.CloudFiles.BlobStorage {
             set { _connection = value; }
         }
 
-
-        public CF_Account Account {
+        /// <summary>
+        /// Account for the user allowed to access the CDN
+        /// </summary>
+        protected CF_Account Account {
             get { 
                 if (_account == null)
                     _account = new CF_Account(this.Connection, this.Client);
@@ -226,7 +227,10 @@ namespace Sitefinity.CloudFiles.BlobStorage {
             set { _account = value; }
         }
 
-        public UserCredentials UserCredentials {
+        /// <summary>
+        /// User allowed to access the CDN
+        /// </summary>
+        protected UserCredentials UserCredentials {
             get { 
                 if (_userCredentials == null)
                     _userCredentials = new UserCredentials(this._userName, this._apiKey);
@@ -235,7 +239,10 @@ namespace Sitefinity.CloudFiles.BlobStorage {
             set { _userCredentials = value; }
         }
         
-        public Container ContainerBucket {
+        /// <summary>
+        /// Instance of the CloudFiles Container
+        /// </summary>
+        protected Container ContainerBucket {
             get {
                 if (_containerBucket == null)
                     _containerBucket = this.Account.GetContainer(this._containerName);
@@ -246,17 +253,5 @@ namespace Sitefinity.CloudFiles.BlobStorage {
 
         #endregion
 
-        #region Fields
-
-        private string _userName = "";
-        private string _apiKey = "";
-        private string _containerName = "";
-
-        private UserCredentials _userCredentials = null;
-        private CF_Client _client = null;
-        private CF_Connection _connection = null;
-        private CF_Account _account = null;
-        private Container _containerBucket = null;
-        #endregion
     }
 }
