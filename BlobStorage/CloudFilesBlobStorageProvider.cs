@@ -1,6 +1,8 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using OpenStack.Swift;
 using Telerik.Microsoft.Practices.EnterpriseLibrary.Logging;
 using Telerik.Sitefinity.Modules.Libraries.BlobStorage;
 using Telerik.Sitefinity.BlobStorage;
@@ -8,6 +10,7 @@ using System.Configuration;
 using System.Collections.Specialized;
 using System.IO;
 using Rackspace.Cloudfiles;
+using Rackspace.Cloudfiles.Constants;
 
 namespace Sitefinity.CloudFiles.BlobStorage {
     public class CloudFilesBlobStorageProvider : CloudBlobStorageProvider {
@@ -65,19 +68,21 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="source">The source item's content stream.</param>
         /// <param name="bufferSize">Size of the upload buffer.</param>
         /// <returns>The length of the uploaded stream.</returns>
-        public override long Upload(IBlobContent content, Stream source, int bufferSize)
-        {
-            var filename = content.GetFileName();
-            var obj = new CF_Object(this.Connection, this.ContainerBucket, this.Client, filename);
-            
-            obj.Write(source);
-
-            var uploadedObject = this.ContainerBucket.GetObject(filename);
+        public override long Upload(IBlobContent content, Stream source, int bufferSize) {
+            var uploadedObject = this.UploadContent(content, source);
             
             return uploadedObject.ContentLength;
         }
+  
+        private StorageObject UploadContent(IBlobContent content, Stream source) {
+            var filename = this.GetBlobName(content);
+            var obj = new CF_Object(this.Connection, this.ContainerBucket, this.Client, filename);
 
+            obj.Write(source);
 
+            var uploadedObject = this.ContainerBucket.GetObject(filename);
+            return uploadedObject;
+        }
 
         /// <summary>
         /// Gets the upload stream.
@@ -94,7 +99,7 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="content">The content.</param>
         /// <returns></returns>
         public override Stream GetDownloadStream(IBlobContent content) {
-            string filename = content.GetFileName();
+            string filename = this.GetBlobName(content);
             try
             {
                 var cloudObject = this.ContainerBucket.GetObject(filename);
@@ -115,14 +120,13 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// </summary>
         /// <param name="location">The location.</param>
         public override void Delete(IBlobContentLocation location) {
-            string filename = location.GetFileName();
             try
             {
-                this.ContainerBucket.DeleteObject(filename);
+                this.ContainerBucket.DeleteObject(this.GetBlobPath(location));
             }
             catch (ObjectNotFoundException oex)
             {
-                Logger.Writer.Write("Object not found: Error deleting {0} from the cloudfiles CDN. {1}".Arrange(filename, oex.Message));
+                Logger.Writer.Write("Object not found: Error deleting {0} from the cloudfiles CDN. {1}".Arrange(location.FilePath, oex.Message));
             }
         }
 
@@ -132,14 +136,14 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="location">The location.</param>
         /// <returns></returns>
         public override bool BlobExists(IBlobContentLocation location) {
-            string filename = location.GetFileName();
             try
             {
-                return (this.ContainerBucket.GetObject(filename) == null) ? false : true; //Not sure why I'm bothering, it'll throw an exception if there's no object
+                var blob = this.GetBlob(location);
+                return (blob == null) ? false : true; //Not sure why I'm bothering, it'll throw an exception if there's no object
             }
             catch (ObjectNotFoundException oex)
             {
-                Logger.Writer.Write("Object not found: Checking if Blob {0} Exists on the cloudfiles CDN. {1}".Arrange(filename, oex.Message));
+                Logger.Writer.Write("Object not found: Checking if Blob {0} Exists on the cloudfiles CDN. {1}".Arrange(location.FilePath, oex.Message));
                 return false;
             }
         }
@@ -150,24 +154,32 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="content">The content.</param>
         /// <returns></returns>
         public override string GetItemUrl(IBlobContentLocation content) {
-            string filename = content.GetFileName();
             try{
-                var cloudObject = this.ContainerBucket.GetObject(filename);
+                var cloudObject = this.GetBlob(content);
 
                 return (cloudObject != null) ? cloudObject.CdnUri.AbsoluteUri : String.Empty;	
             }catch(ObjectNotFoundException oex){
-                Logger.Writer.Write("Object not found: Error obtaining the Url for file {0} on the CDN as {1} CDN. {2}".Arrange(content.FilePath, filename, oex.Message));
-                return "http://127.0.0.1/{0}".Arrange(filename); //Cant return nothing, service will die
+                Logger.Writer.Write("Object not found: Error obtaining the Url for file {0} on the CDN as {1} CDN. {2}".Arrange(content.FilePath, content.FilePath, oex.Message));
+                return "http://127.0.0.1/{0}".Arrange(content.FilePath); //Cant return nothing, service will die
             }
         }
 
         /// <summary>
         /// Copies the specified source.
         /// </summary>
-        /// <param name="source">The source.</param>
-        /// <param name="destination">The destination.</param>
+        /// <param name="source">Source is the new file uploaded to the cloud, Delete will be called immediatly after copy completes</param>
+        /// <param name="destination">The existing object</param>
         public override void Copy(IBlobContentLocation source, IBlobContentLocation destination) {
-            //Do nothing?
+            try
+            {
+                var sourceBlob = this.GetBlob(source);
+                var destBlob = this.GetBlob(destination);
+
+                destBlob.Write(sourceBlob.Read());
+            }
+            catch(Exception ex){
+                Logger.Writer.Write("Error Copying Source File: {0} to Destination {1} on the CDN".Arrange(source.FilePath, destination.FilePath, ex.Message));
+            }
         }
 
 
@@ -177,7 +189,7 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="location">The location.</param>
         /// <param name="properties">The properties.</param>
         public override void SetProperties(IBlobContentLocation location, IBlobProperties properties) {
-            //No properties to set by default 
+            //??
         }
         
         /// <summary>
@@ -186,9 +198,24 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="location">The location.</param>
         /// <returns></returns>
         public override IBlobProperties GetProperties(IBlobContentLocation location) {
-            //No properties to get by default
-            return null;
+            var blob = this.GetBlob(location);
+
+            return new BlobProperties
+            {
+                ContentType = blob.ContentType
+            };
         }
+
+        private StorageObject GetBlob(IBlobContentLocation blobLocation)
+        {
+            return this.ContainerBucket.GetObject(this.GetBlobPath(blobLocation));
+        }
+
+        private string GetBlobPath(IBlobContentLocation content)
+        {
+            return this.GetBlobName(content);
+        }
+
 
         #region Properties
         /// <summary>
