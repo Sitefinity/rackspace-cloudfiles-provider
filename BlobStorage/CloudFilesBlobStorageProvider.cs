@@ -11,6 +11,7 @@ using System.Collections.Specialized;
 using System.IO;
 using Rackspace.Cloudfiles;
 using Rackspace.Cloudfiles.Constants;
+using System.Net;
 
 namespace Sitefinity.CloudFiles.BlobStorage {
     public class CloudFilesBlobStorageProvider : CloudBlobStorageProvider {
@@ -69,21 +70,14 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         /// <param name="bufferSize">Size of the upload buffer.</param>
         /// <returns>The length of the uploaded stream.</returns>
         public override long Upload(IBlobContent content, Stream source, int bufferSize) {
-            var uploadedObject = this.UploadContent(content, source);
-            
-            return uploadedObject.ContentLength;
-        }
-  
-        private StorageObject UploadContent(IBlobContent content, Stream source) {
             var filename = this.GetBlobName(content);
             var obj = new CF_Object(this.Connection, this.ContainerBucket, this.Client, filename);
 
             obj.Write(source);
 
-            var uploadedObject = this.ContainerBucket.GetObject(filename);
-            return uploadedObject;
+            return obj.ContentLength;
         }
-
+  
         /// <summary>
         /// Gets the upload stream.
         /// </summary>
@@ -172,14 +166,20 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         public override void Copy(IBlobContentLocation source, IBlobContentLocation destination) {
             try
             {
-                var sourceBlob = this.GetBlob(source);
-                var destBlob = this.GetBlob(destination);
+                var sourceBlobPath = this.GetBlobPath(source);
+                var destBlobPath = this.GetBlobPath(destination);
 
-                destBlob.Write(sourceBlob.Read());
+                this.ContainerBucket.CopyObject(sourceBlobPath, destBlobPath);
             }
             catch(Exception ex){
                 Logger.Writer.Write("Error Copying Source File: {0} to Destination {1} on the CDN".Arrange(source.FilePath, destination.FilePath, ex.Message));
             }
+        }
+
+        public override void Move(IBlobContentLocation source, IBlobContentLocation destination)
+        {
+            this.Copy(source, destination);
+            this.Delete(source);
         }
 
 
@@ -215,7 +215,6 @@ namespace Sitefinity.CloudFiles.BlobStorage {
         {
             return this.GetBlobName(content);
         }
-
 
         #region Properties
         /// <summary>
